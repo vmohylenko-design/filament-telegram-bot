@@ -1,19 +1,17 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from './server.mjs';
-test('authenticated webhook forwarding and retry behavior',async()=>{
- const config={SITE_URL:'https://filament-vinnytsia-workspace.vmohylenko.chatgpt.site',SITE_SERVICE_TOKEN:'test-service-secret',BOT_BRIDGE_KEY:'test-bridge-key',TELEGRAM_WEBHOOK_SECRET:'test-webhook-secret'};
- let fail=false,calls=0;
- const server=createServer(config,async(url,request)=>{calls++;assert.equal(url.pathname,'/api/botbridge');assert.equal(request.headers['X-Bot-Bridge-Key'],config.BOT_BRIDGE_KEY);assert.equal(JSON.parse(request.body).update_id,1);return new Response('',{status:fail?503:200})});
- await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+test('webhook requires its own secret and never accesses the private panel',async()=>{
+ const server=createServer({TELEGRAM_WEBHOOK_SECRET:'test-secret'},()=>{throw Error('External access forbidden')});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));
  const base='http://127.0.0.1:'+server.address().port;
- const post=(body,secret=config.TELEGRAM_WEBHOOK_SECRET)=>fetch(base+'/telegram/webhook',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':secret},body});
+ const post=(body,secret='test-secret')=>fetch(base+'/telegram/webhook',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':secret},body});
  try{
-  assert.equal((await fetch(base+'/health')).status,200);
-  assert.equal((await post('{"update_id":1}','wrong')).status,403);assert.equal(calls,0);
-  assert.equal((await post('invalid')).status,400);
-  assert.equal((await post('{"update_id":1}')).status,200);
-  fail=true;assert.equal((await post('{"update_id":1}')).status,503);
-  assert.equal((await post('x'.repeat(66000))).status,413);
- }finally{await new Promise(resolve=>server.close(resolve))}
+ assert.equal((await fetch(base+'/health')).status,200);
+ assert.equal((await post('{}','wrong')).status,403);
+ assert.equal((await post('invalid')).status,400);
+ const response=await post(JSON.stringify({update_id:1,message:{chat:{id:123,type:'private'},text:'/start'}}));
+ const data=await response.json();assert.equal(data.method,'sendMessage');assert.equal(data.chat_id,123);
+ assert.equal((await post('x'.repeat(66000))).status,413);
+ }finally{await new Promise(r=>server.close(r))}
 });
