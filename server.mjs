@@ -4,8 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 function matches(a,b){if(typeof a!=='string'||typeof b!=='string')return false;const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y)}
 export function createServer(config=process.env,forward=fetch){
- const site=config.SITE_URL;
- const ready=Boolean(site&&/^https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.chatgpt\.site\/?$/.test(site)&&config.SITE_SERVICE_TOKEN&&config.BOT_BRIDGE_KEY&&config.TELEGRAM_WEBHOOK_SECRET);
+ const ready=Boolean(config.TELEGRAM_WEBHOOK_SECRET);
  return http.createServer(async(req,res)=>{
   const reply=(status,data)=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(data))};
   if(req.method==='GET'&&req.url==='/health')return reply(ready?200:503,{ready});
@@ -18,9 +17,9 @@ export function createServer(config=process.env,forward=fetch){
    const body=Buffer.concat(chunks).toString('utf8');let update;
    try{update=JSON.parse(body)}catch{return reply(400,{error:'Invalid JSON'})}
    if(!Number.isSafeInteger(update?.update_id)||update.update_id<0)return reply(400,{error:'Invalid update'});
-   const result=await forward(new URL('/api/botbridge',site),{method:'POST',redirect:'error',headers:{'content-type':'application/json','OAI-Sites-Authorization':'Bearer '+config.SITE_SERVICE_TOKEN,'X-Bot-Bridge-Key':config.BOT_BRIDGE_KEY},body,signal:AbortSignal.timeout(20000)});
-   if(!result.ok)return reply(503,{error:'Processing unavailable'});
-   return reply(200,{ok:true});
+   const chat=update.message?.chat;
+   if(!chat||chat.type!=='private')return reply(200,{ok:true});
+   return reply(200,{method:'sendMessage',chat_id:chat.id,text:'Вітаємо у Філамент Вінниця! Бот проходить налаштування. Прийом замовлень і актуальний склад ще не підключені. Оплату через цей чат поки не здійснюйте.'});
   }catch{return reply(503,{error:'Processing unavailable'})}
  });
 }
