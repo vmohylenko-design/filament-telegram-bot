@@ -1,13 +1,18 @@
+import {readFile} from 'node:fs/promises';
 import http from 'node:http';
-import {readCatalog,catalogReply} from './sheets.mjs';
+import {readCatalog,catalogReply,ensureOrders,saveOrder} from './sheets.mjs';
 import { timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 function matches(a,b){if(typeof a!=='string'||typeof b!=='string')return false;const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y)}
+let catalogCache=null,catalogUntil=0,catalogPending=null;
+async function publicCatalog(){if(catalogCache&&Date.now()<catalogUntil)return catalogCache;if(!catalogPending)catalogPending=readCatalog().then(r=>{catalogCache=r;catalogUntil=Date.now()+15000;return r}).finally(()=>{catalogPending=null});return catalogPending}
 export function createServer(config=process.env,forward=fetch){
  const ready=Boolean(config.TELEGRAM_WEBHOOK_SECRET);
  return http.createServer(async(req,res)=>{
   const reply=(status,data)=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(data))};
+  if(req.method==='GET'&&['/','/shop'].includes(req.url)){res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff','referrer-policy':'no-referrer'});return res.end(await readFile(new URL('./shop.html',import.meta.url),'utf8'))}
+  if(req.method==='GET'&&req.url==='/api/catalog'){try{return reply(200,await publicCatalog())}catch{return reply(503,{error:'Каталог тимчасово недоступний'})}}
   if(req.method==='GET'&&req.url==='/health')return reply(ready?200:503,{ready});
   if(req.method!=='POST'||req.url!=='/telegram/webhook')return reply(404,{error:'Not found'});
   if(!ready)return reply(503,{error:'Not configured'});
@@ -20,13 +25,18 @@ export function createServer(config=process.env,forward=fetch){
    if(!Number.isSafeInteger(update?.update_id)||update.update_id<0)return reply(400,{error:'Invalid update'});
    const chat=update.message?.chat;
    if(!chat||chat.type!=='private')return reply(200,{ok:true});
+   if(update.message.web_app_data){
+    try{let order;try{order=JSON.parse(update.message.web_app_data.data)}catch{return reply(200,{method:'sendMessage',chat_id:chat.id,text:'Не вдалося прочитати замовлення. Відкрийте магазин знову.'})}
+     const result=await saveOrder(order,update);return reply(200,{method:'sendMessage',chat_id:chat.id,text:`Заявку ${result.id} збережено.${result.total?' Сума товарів: '+result.total+' грн.':''}\nПродавець має підтвердити наявність, доставку й оплату. Автоматичного резерву немає. Передоплату поки не переказуйте.`});
+    }catch(e){if(/GOOGLE_|ORDER_|SHEET_|CATALOG_/.test(e.message)){console.error('ORDER_SAVE_FAILED');return reply(503,{error:'Order storage unavailable'})}return reply(200,{method:'sendMessage',chat_id:chat.id,text:e.message||'Перевірте замовлення.'})}
+   }
    const input=(update.message.text||'').trim();
    if(input && !['/start','/help'].includes(input)){
     try{const rows=await readCatalog();return reply(200,{method:'sendMessage',chat_id:chat.id,text:catalogReply(rows,['📦 Наявність','/catalog'].includes(input)?'':input)})}
     catch(e){console.error('CATALOG_UNAVAILABLE',/^GOOGLE_|^SHEET_|^CATALOG_/.test(e.message)?e.message:'CONNECTION_FAILED');return reply(200,{method:'sendMessage',chat_id:chat.id,text:'Не вдалося перевірити актуальний склад. Спробуйте пізніше. Замовлення не створено.'})}
    }
-   return reply(200,{method:'sendMessage',chat_id:chat.id,reply_markup:{keyboard:[[{text:'📦 Наявність'}]],resize_keyboard:true},text:'Вітаємо у Філамент Вінниця! Натисніть «📦 Наявність» або введіть назву англійською чи код кольору, наприклад PLA Matte або 10101. Оформлення замовлень і оплата через бот ще не увімкнені.'});
+   return reply(200,{method:'sendMessage',chat_id:chat.id,reply_markup:{keyboard:[[{text:'🛍 Відкрити магазин',web_app:{url:'https://filament-vinnytsia-telegram.onrender.com/shop'}}]],resize_keyboard:true},text:'Вітаємо у Філамент Вінниця! Натисніть «🛍 Відкрити магазин»: оберіть філамент, додайте до кошика та заповніть доставку.'});
   }catch{return reply(503,{error:'Processing unavailable'})}
  });
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){const port=Number(process.env.PORT||10000);const server=createServer();server.listen(port,'0.0.0.0');readCatalog().then(rows=>console.info('GOOGLE_CATALOG_OK rows='+rows.length)).catch(e=>console.error('GOOGLE_CATALOG_CHECK',/^GOOGLE_|^SHEET_|^CATALOG_/.test(e.message)?e.message:'CONNECTION_FAILED'));process.on('SIGTERM',()=>{server.close();setTimeout(()=>process.exit(0),25000).unref()})}
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){const port=Number(process.env.PORT||10000);const server=createServer();server.listen(port,'0.0.0.0');ensureOrders().then(()=>console.info('ORDER_STORAGE_OK')).catch(()=>console.error('ORDER_STORAGE_UNAVAILABLE'));readCatalog().then(rows=>console.info('GOOGLE_CATALOG_OK rows='+rows.length)).catch(e=>console.error('GOOGLE_CATALOG_CHECK',/^GOOGLE_|^SHEET_|^CATALOG_/.test(e.message)?e.message:'CONNECTION_FAILED'));process.on('SIGTERM',()=>{server.close();setTimeout(()=>process.exit(0),25000).unref()})}
