@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {readCatalog,catalogReply} from './sheets.mjs';
 import { timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
@@ -19,8 +20,13 @@ export function createServer(config=process.env,forward=fetch){
    if(!Number.isSafeInteger(update?.update_id)||update.update_id<0)return reply(400,{error:'Invalid update'});
    const chat=update.message?.chat;
    if(!chat||chat.type!=='private')return reply(200,{ok:true});
-   return reply(200,{method:'sendMessage',chat_id:chat.id,text:'Вітаємо у Філамент Вінниця! Бот проходить налаштування. Прийом замовлень і актуальний склад ще не підключені. Оплату через цей чат поки не здійснюйте.'});
+   const input=(update.message.text||'').trim();
+   if(input && !['/start','/help'].includes(input)){
+    try{const rows=await readCatalog();return reply(200,{method:'sendMessage',chat_id:chat.id,text:catalogReply(rows,['📦 Наявність','/catalog'].includes(input)?'':input)})}
+    catch(e){console.error('CATALOG_UNAVAILABLE',/^GOOGLE_|^SHEET_|^CATALOG_/.test(e.message)?e.message:'CONNECTION_FAILED');return reply(200,{method:'sendMessage',chat_id:chat.id,text:'Не вдалося перевірити актуальний склад. Спробуйте пізніше. Замовлення не створено.'})}
+   }
+   return reply(200,{method:'sendMessage',chat_id:chat.id,reply_markup:{keyboard:[[{text:'📦 Наявність'}]],resize_keyboard:true},text:'Вітаємо у Філамент Вінниця! Натисніть «📦 Наявність» або введіть назву англійською чи код кольору, наприклад PLA Matte або 10101. Оформлення замовлень і оплата через бот ще не увімкнені.'});
   }catch{return reply(503,{error:'Processing unavailable'})}
  });
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){const port=Number(process.env.PORT||10000);const server=createServer();server.listen(port,'0.0.0.0');process.on('SIGTERM',()=>{server.close();setTimeout(()=>process.exit(0),25000).unref()})}
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){const port=Number(process.env.PORT||10000);const server=createServer();server.listen(port,'0.0.0.0');readCatalog().then(rows=>console.info('GOOGLE_CATALOG_OK rows='+rows.length)).catch(e=>console.error('GOOGLE_CATALOG_CHECK',/^GOOGLE_|^SHEET_|^CATALOG_/.test(e.message)?e.message:'CONNECTION_FAILED'));process.on('SIGTERM',()=>{server.close();setTimeout(()=>process.exit(0),25000).unref()})}
